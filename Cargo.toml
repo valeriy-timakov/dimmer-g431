@@ -1,0 +1,77 @@
+[package]
+name = "dimmer-g431"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+log = "0.4.22"
+
+
+cortex-m-rt = "0.7.2"
+defmt-rtt = "0.4.0"
+cortex-m-rtic = "1.1.4"
+cortex-m-semihosting = "0.3.5"
+panic-semihosting = "0.5.3"
+panic-halt = "0.2.0"
+panic-itm = "0.4.2"
+fugit = "0.3"
+embedded-alloc = "0.5"
+
+[dependencies.stm32g4xx-hal]
+version = "0.0"
+features = ["stm32g431","log-rtt", "defmt", "rt"]
+rtic-time = { version = "2.0", optional = true }
+
+
+[dev-dependencies]
+defmt-rtt = "0.4.0"
+defmt = { version = "0.3", features = ["encoding-rzcobs"] }
+defmt-brtt = { version = "0.1", default-features = false, features = ["rtt"] }
+
+# cargo build/run
+[profile.dev]
+codegen-units = 1
+debug = 2
+debug-assertions = true # <-
+incremental = false
+opt-level = "s" # <-
+overflow-checks = true # <-
+
+# cargo test
+[profile.test]
+codegen-units = 1
+debug = 2
+debug-assertions = true # <-
+incremental = false
+opt-level = "s" # <-
+overflow-checks = true # <-
+
+# cargo build/run --release
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false # <-
+incremental = false
+lto = 'fat'
+opt-level = "s" # <-
+overflow-checks = false # <-
+
+# cargo test --release
+[profile.bench]
+codegen-units = 1
+debug = 2
+debug-assertions = false # <-
+incremental = false
+lto = 'fat'
+opt-level = "s" # <-
+overflow-checks = false # <-
+
+# uncomment this to switch from the crates.io version of defmt to its git version
+# check app-template's README for instructions
+# [patch.crates-io]
+# defmt = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version supported by probe-rs (see changelog)" }
+# defmt-rtt = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version supported by probe-rs (see changelog)" }
+# defmt-test = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version supported by probe-rs (see changelog)" }
+# panic-probe = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version supported by probe-rs (see changelog)" }
