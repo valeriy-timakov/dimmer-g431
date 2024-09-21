@@ -64,7 +64,6 @@ mod app {
     use stm32g4xx_hal::syscfg::SysCfgExt;
     use stm32g4xx_hal::timer::{CountDownTimer, Event, Timer};
 
-    use crate::{compare_arrays, storage};
     use crate::communication::{Buffer, LedState, TxTransfer};
     use crate::debug_led::DebugLed;
     use crate::pwm_service::{PwmChannels, PwmSettings};
