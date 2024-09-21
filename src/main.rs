@@ -10,7 +10,7 @@ extern crate alloc;
 
 use core::panic::PanicInfo;
 use core::sync::atomic;
-use core::sync::atomic::{Ordering, AtomicBool};
+use core::sync::atomic::Ordering;
 
 mod pwm_service;
 mod counter;
@@ -32,18 +32,24 @@ fn compare_arrays(a: &[u8], b: &[u8]) -> bool {
 
 #[rtic::app(device = stm32g4xx_hal::stm32g4::stm32g431, peripherals = true)]
 mod app {
+    use core::fmt::Write;
+    use core::sync::atomic::AtomicBool;
+    use core::sync::atomic::Ordering::Relaxed;
+
     use cortex_m_semihosting::hprintln;
     use embedded_alloc::Heap;
     use embedded_dma::{ReadBuffer, StaticReadBuffer};
+    use embedded_hal::digital::v2::OutputPin;
     use fugit::{ExtU32, RateExtU32};
     use rtic::Mutex;
     use stm32g4xx_hal::delay::DelayFromCountDownTimer;
+    use stm32g4xx_hal::dma::{MemoryToPeripheral, Transfer, TransferExt};
     use stm32g4xx_hal::dma::config::DmaConfig;
     use stm32g4xx_hal::dma::stream::{DMAExt, Stream0, Stream1};
     use stm32g4xx_hal::dma::transfer::{CircTransfer, ConstTransfer};
-    use stm32g4xx_hal::dma::{MemoryToPeripheral, Transfer, TransferExt};
     use stm32g4xx_hal::flash::{FlashExt, FlashSize, FlashWriter};
-    use embedded_hal::digital::v2::{OutputPin};
+    use stm32g4xx_hal::flash::Error::{AddressLargerThanFlash, AddressMisaligned, ArrayMustBeDivisibleBy8, EraseError, LengthNotMultiple2, LengthTooLong, LockError, OptLockError, OptUnlockError, ProgrammingError, UnlockError, VerifyError, WriteError};
+    use stm32g4xx_hal::flash::Parts;
     use stm32g4xx_hal::gpio::{Alternate, ExtiPin, Input, Output, PullDown, PushPull, SignalEdge};
     use stm32g4xx_hal::gpio::gpioa::*;
     use stm32g4xx_hal::gpio::gpiob::*;
@@ -51,22 +57,17 @@ mod app {
     use stm32g4xx_hal::hal::PwmPin;
     use stm32g4xx_hal::prelude::*;
     use stm32g4xx_hal::pwm::{Pins, PwmExt};
-    use stm32g4xx_hal::rcc::{RccExt};
+    use stm32g4xx_hal::pwr::PwrExt;
+    use stm32g4xx_hal::rcc::RccExt;
+    use stm32g4xx_hal::serial::{DMA, FullConfig, Rx, Tx};
     use stm32g4xx_hal::stm32::{DMA1, TIM6, TIM7, USART1};
     use stm32g4xx_hal::syscfg::SysCfgExt;
-    use stm32g4xx_hal::timer::{CountDownTimer, Timer, Event};
-    use stm32g4xx_hal::flash::{Parts};
-    use stm32g4xx_hal::pwr::PwrExt;
-    use stm32g4xx_hal::serial::{DMA, FullConfig, Rx, Tx};
-    use crate::{compare_arrays, storage};
-    use core::fmt::Write;
-    use core::sync::atomic::AtomicBool;
-    use core::sync::atomic::Ordering::Relaxed;
-    use stm32g4xx_hal::flash::Error::{AddressLargerThanFlash, AddressMisaligned, ArrayMustBeDivisibleBy8, EraseError, LengthNotMultiple2, LengthTooLong, LockError, OptLockError, OptUnlockError, ProgrammingError, UnlockError, VerifyError, WriteError};
+    use stm32g4xx_hal::timer::{CountDownTimer, Event, Timer};
 
-    use crate::pwm_service::{PwmChannels, PwmSettings};
+    use crate::{compare_arrays, storage};
     use crate::communication::{Buffer, LedState, TxTransfer};
     use crate::debug_led::DebugLed;
+    use crate::pwm_service::{PwmChannels, PwmSettings};
     use crate::storage::Storage;
 
     const LOG_LEVEL: log::LevelFilter = log::LevelFilter::Info;

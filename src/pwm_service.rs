@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+
 use fugit::RateExtU32;
 use stm32g4xx_hal::gpio::gpioa::{PA0, PA1, PA10, PA11, PA12, PA15, PA2, PA3, PA4, PA6, PA7, PA8, PA9};
 use stm32g4xx_hal::gpio::gpiob::{PB0, PB1, PB10, PB11, PB4, PB6, PB8, PB9};
@@ -6,7 +7,6 @@ use stm32g4xx_hal::hal::PwmPin;
 use stm32g4xx_hal::pwm::PwmExt;
 use stm32g4xx_hal::rcc::Rcc;
 use stm32g4xx_hal::stm32::{TIM1, TIM15, TIM16, TIM17, TIM2, TIM3, TIM4, TIM8};
-use stm32g4xx_hal::time::Hertz;
 
 pub struct PwmSettings {
     pub group1_freq_hz: u32,

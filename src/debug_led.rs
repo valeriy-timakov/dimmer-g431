@@ -1,5 +1,6 @@
 use core::sync::atomic::AtomicBool;
-use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use core::sync::atomic::Ordering::Relaxed;
+
 use embedded_hal::digital::v2::{OutputPin, PinState};
 
 pub struct DebugLed<PIN> {

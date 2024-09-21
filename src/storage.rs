@@ -1,7 +1,6 @@
 use embedded_hal::digital::v2::OutputPin;
 use stm32g4xx_hal::flash::{FlashSize, Parts};
-use stm32g4xx_hal::gpio::{Output, PushPull};
-use stm32g4xx_hal::gpio::gpiob::PB3;
+
 use crate::app::Error;
 use crate::pwm_service::PwmSettings;
 
