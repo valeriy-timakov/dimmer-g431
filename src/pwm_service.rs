@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use fugit::RateExtU32;
 use stm32g4xx_hal::gpio::gpioa::{PA0, PA1, PA10, PA11, PA12, PA15, PA2, PA3, PA4, PA6, PA7, PA8, PA9};
 use stm32g4xx_hal::gpio::gpiob::{PB0, PB1, PB10, PB11, PB4, PB6, PB8, PB9};
 use stm32g4xx_hal::hal::PwmPin;
@@ -8,31 +9,45 @@ use stm32g4xx_hal::stm32::{TIM1, TIM15, TIM16, TIM17, TIM2, TIM3, TIM4, TIM8};
 use stm32g4xx_hal::time::Hertz;
 
 pub struct PwmSettings {
-    group1_freq: Hertz,
-    group2_freq: Hertz,
-    group3_freq: Hertz,
-    group4_freq: Hertz,
-    group5_freq: Hertz,
-    group6_freq: Hertz,
-    group7_freq: Hertz,
-    group8_freq: Hertz,
-    group9_freq: Hertz,
+    pub group1_freq_hz: u32,
+    pub group2_freq_hz: u32,
+    pub group3_freq_hz: u32,
+    pub group4_freq_hz: u32,
+    pub group5_freq_hz: u32,
+    pub group6_freq_hz: u32,
+    pub group7_freq_hz: u32,
+    pub group8_freq_hz: u32,
 }
 
 impl PwmSettings {
-    pub fn new(group1_freq: Hertz, group2_freq: Hertz, group3_freq: Hertz, group4_freq: Hertz,
-               group5_freq: Hertz, group6_freq: Hertz, group7_freq: Hertz, group8_freq: Hertz,
-               group9_freq: Hertz) -> Self {
+    
+    const DEFAULT_FREQ: u32 = 1000;
+    
+    pub fn new(group1_freq: u32, group2_freq: u32, group3_freq: u32, group4_freq: u32,
+               group5_freq: u32, group6_freq: u32, group7_freq: u32, group8_freq: u32
+    ) -> Self {
         PwmSettings {
-            group1_freq,
-            group2_freq,
-            group3_freq,
-            group4_freq,
-            group5_freq,
-            group6_freq,
-            group7_freq,
-            group8_freq,
-            group9_freq,
+            group1_freq_hz: group1_freq,
+            group2_freq_hz: group2_freq,
+            group3_freq_hz: group3_freq,
+            group4_freq_hz: group4_freq,
+            group5_freq_hz: group5_freq,
+            group6_freq_hz: group6_freq,
+            group7_freq_hz: group7_freq,
+            group8_freq_hz: group8_freq,
+        }
+    }
+    
+    pub fn default() -> Self {
+        PwmSettings {
+            group1_freq_hz: Self::DEFAULT_FREQ,
+            group2_freq_hz: Self::DEFAULT_FREQ,
+            group3_freq_hz: Self::DEFAULT_FREQ,
+            group4_freq_hz: Self::DEFAULT_FREQ,
+            group5_freq_hz: Self::DEFAULT_FREQ,
+            group6_freq_hz: Self::DEFAULT_FREQ,
+            group7_freq_hz: Self::DEFAULT_FREQ,
+            group8_freq_hz: Self::DEFAULT_FREQ,
         }
     }
 }
@@ -83,18 +98,18 @@ impl PwmChannels {
                             tim17: TIM17, pin17: PA7<F>,
                             settings: PwmSettings, rcc: &mut Rcc) -> Self {
         let group1 = tim2.pwm((pins2.0.into_alternate(), pins2.1.into_alternate(),
-                               pins2.2.into_alternate(), pins2.3.into_alternate()), settings.group1_freq, rcc);
+                               pins2.2.into_alternate(), pins2.3.into_alternate()), settings.group1_freq_hz.Hz(), rcc);
         let group2 = tim1.pwm((pins1.0.into_alternate(), pins1.1.into_alternate(),
-                               pins1.2.into_alternate(), pins1.3.into_alternate()), settings.group2_freq, rcc);
+                               pins1.2.into_alternate(), pins1.3.into_alternate()), settings.group2_freq_hz.Hz(), rcc);
         let group3 = tim3.pwm((pins3.0.into_alternate(), pins3.1.into_alternate(),
-                               pins3.2.into_alternate(), pins3.3.into_alternate()), settings.group3_freq, rcc);
+                               pins3.2.into_alternate(), pins3.3.into_alternate()), settings.group3_freq_hz.Hz(), rcc);
         let group4 = tim4.pwm((pins4.0.into_alternate(), pins4.1.into_alternate(),
-                               pins4.2.into_alternate(), pins4.3.into_alternate()), settings.group4_freq, rcc);
-        let group5 = tim8.pwm(pin8.into_alternate(), settings.group5_freq, rcc);
+                               pins4.2.into_alternate(), pins4.3.into_alternate()), settings.group4_freq_hz.Hz(), rcc);
+        let group5 = tim8.pwm(pin8.into_alternate(), settings.group5_freq_hz.Hz(), rcc);
         let group6 = tim15.pwm((pins15.0.into_alternate(),
-                                pins15.1.into_alternate()), settings.group6_freq, rcc);
-        let group7 = tim16.pwm(pin16.into_alternate(), settings.group7_freq, rcc);
-        let group8 = tim17.pwm(pin17.into_alternate(), settings.group8_freq, rcc);
+                                pins15.1.into_alternate()), settings.group6_freq_hz.Hz(), rcc);
+        let group7 = tim16.pwm(pin16.into_alternate(), settings.group7_freq_hz.Hz(), rcc);
+        let group8 = tim17.pwm(pin17.into_alternate(), settings.group8_freq_hz.Hz(), rcc);
         PwmChannels {
             channels_32: [
                 Box::new(group1.0),
