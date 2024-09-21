@@ -510,7 +510,6 @@ mod app {
             LockError => "LockError",
             OptLockError => "OptLockError",
             ArrayMustBeDivisibleBy8 => "ArrayMustBeDivisibleBy8",
-            _ => "undefined error",
         }
     }
 
