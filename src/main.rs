@@ -36,20 +36,18 @@ mod app {
     use core::sync::atomic::AtomicBool;
     use core::sync::atomic::Ordering::Relaxed;
 
-    use cortex_m_semihosting::hprintln;
     use embedded_alloc::Heap;
     use embedded_dma::{ReadBuffer, StaticReadBuffer};
     use embedded_hal::digital::v2::OutputPin;
     use fugit::{ExtU32, RateExtU32};
     use rtic::Mutex;
     use stm32g4xx_hal::delay::DelayFromCountDownTimer;
-    use stm32g4xx_hal::dma::{MemoryToPeripheral, Transfer, TransferExt};
+    use stm32g4xx_hal::dma::{  TransferExt};
     use stm32g4xx_hal::dma::config::DmaConfig;
     use stm32g4xx_hal::dma::stream::{DMAExt, Stream0, Stream1};
-    use stm32g4xx_hal::dma::transfer::{CircTransfer, ConstTransfer};
-    use stm32g4xx_hal::flash::{FlashExt, FlashSize, FlashWriter};
+    use stm32g4xx_hal::dma::transfer::{CircTransfer};
+    use stm32g4xx_hal::flash::{FlashExt};
     use stm32g4xx_hal::flash::Error::{AddressLargerThanFlash, AddressMisaligned, ArrayMustBeDivisibleBy8, EraseError, LengthNotMultiple2, LengthTooLong, LockError, OptLockError, OptUnlockError, ProgrammingError, UnlockError, VerifyError, WriteError};
-    use stm32g4xx_hal::flash::Parts;
     use stm32g4xx_hal::gpio::{Alternate, ExtiPin, Input, Output, PullDown, PushPull, SignalEdge};
     use stm32g4xx_hal::gpio::gpioa::*;
     use stm32g4xx_hal::gpio::gpiob::*;
