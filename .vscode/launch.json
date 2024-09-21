@@ -1,0 +1,31 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Arm Debugger (Attach)",
+            "type": "arm-debugger",
+            "request": "attach",
+            "address": "Websocket (ws://<host>:<port>) or socket (<host>:<port>) to connect to"
+        },
+        {
+            "type": "probe-rs-debug",
+            "request": "launch",
+            "name": "probe-rs Test",
+            "cwd": "${workspaceFolder}",
+            "connectUnderReset": false,
+            "chip": "STM32G431CBUx",
+            "flashingConfig": {
+                "flashingEnabled": true
+            },
+            "coreConfigs": [
+                {
+                    "coreIndex": 0,
+                    "programBinary": "./target/thumbv7em-none-eabihf/debug/${workspaceFolderBasename}"
+                }
+            ]
+        }
+    ]
+}
