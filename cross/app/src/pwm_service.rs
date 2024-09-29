@@ -11,7 +11,6 @@ use stm32g4xx_hal::stm32::{TIM1, TIM15, TIM16, TIM17, TIM2, TIM3, TIM4, TIM8};
 use serde::{Serialize, Deserialize};
 use crate::errors::Error;
 
-#[repr(C)]
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Clone, Copy)]
 pub struct PwmSettings {
     pub group1_freq_hz: u32,

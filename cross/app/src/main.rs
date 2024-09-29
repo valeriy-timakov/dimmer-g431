@@ -69,7 +69,7 @@ mod app {
     use crate::debug_led::DebugLed;
     use crate::pwm_service::{PwmChannels, PwmSettings};
     use crate::storage::Storage;
-    use postcard::{to_slice, from_bytes, to_slice_crc32};
+    use postcard::{to_slice_crc32};
     use crc::{Crc, CRC_32_ISCSI};
     use crate::errors::Error;
 
@@ -202,7 +202,7 @@ mod app {
 
 
         let crc = Crc::<u32>::new(&CRC_32_ISCSI);
-        let slice = to_slice_crc32(&pwm_settings, rbuf, crc).unwrap();
+        let slice = to_slice_crc32(&pwm_settings, rbuf, crc.digest()).unwrap();
         
 
 
@@ -616,3 +616,5 @@ fn panic(_info: &PanicInfo) -> ! {
         atomic::compiler_fence(Ordering::SeqCst);
     }
 }
+
+

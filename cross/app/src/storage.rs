@@ -1,7 +1,7 @@
 use embedded_hal::digital::v2::OutputPin;
 use stm32g4xx_hal::flash::{FlashSize, Parts};
 
-use crate::app::Error;
+use crate::errors::Error;
 use crate::pwm_service::PwmSettings;
 
 pub struct Storage {

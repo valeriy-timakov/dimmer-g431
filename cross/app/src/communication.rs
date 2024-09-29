@@ -5,7 +5,7 @@ use stm32g4xx_hal::dma::{MemoryToPeripheral, Transfer, TransferExt};
 use stm32g4xx_hal::dma::traits::{Stream, TargetAddress};
 use stm32g4xx_hal::dma::transfer::ConstTransfer;
 
-use crate::app::Error;
+use crate::errors::Error;
 use crate::debug_led::DebugLed;
 
 

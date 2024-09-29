@@ -1,4 +1,5 @@
 use crc::{Crc, CRC_32_ISCSI};
+use dimmer_communication::ClientCommandResult;
 use postcard::from_bytes_crc32;
 use crate::communication::BufferWriter;
 use crate::errors::Error;
@@ -24,13 +25,13 @@ impl Server {
 
     pub fn idle(
         &mut self, 
-        input_data: &[u8], 
+        input_data: &[u8],
         out_buffer: &mut dyn BufferWriter, 
         storage: &mut Storage, 
         channels: &mut PwmChannels
     ) -> Result<(), Error> {
         let crc = Crc::<u32>::new(&CRC_32_ISCSI);
-        let command = from_bytes_crc32(input_data, crc).map_err(|_| Error::SerializedDataError)?;
+        let command:ClientCommandResult = from_bytes_crc32(input_data, crc.digest()).map_err(|_| Error::SerializedDataError)?;
         
         Ok(())
     }
