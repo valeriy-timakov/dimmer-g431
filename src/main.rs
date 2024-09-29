@@ -17,6 +17,8 @@ mod counter;
 mod communication;
 mod storage;
 mod debug_led;
+mod server;
+mod errors;
 
 fn compare_arrays(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -35,13 +37,14 @@ mod app {
     use core::fmt::Write;
     use core::sync::atomic::AtomicBool;
     use core::sync::atomic::Ordering::Relaxed;
+    use cortex_m::delay::Delay;
 
     use embedded_alloc::Heap;
     use embedded_dma::{ReadBuffer, StaticReadBuffer};
     use embedded_hal::digital::v2::OutputPin;
     use fugit::{ExtU32, RateExtU32};
     use rtic::Mutex;
-    use stm32g4xx_hal::delay::DelayFromCountDownTimer;
+    use stm32g4xx_hal::delay::{CountDown};
     use stm32g4xx_hal::dma::{  TransferExt};
     use stm32g4xx_hal::dma::config::DmaConfig;
     use stm32g4xx_hal::dma::stream::{DMAExt, Stream0, Stream1};
@@ -66,6 +69,9 @@ mod app {
     use crate::debug_led::DebugLed;
     use crate::pwm_service::{PwmChannels, PwmSettings};
     use crate::storage::Storage;
+    use postcard::{to_slice, from_bytes, to_slice_crc32};
+    use crc::{Crc, CRC_32_ISCSI};
+    use crate::errors::Error;
 
     const LOG_LEVEL: log::LevelFilter = log::LevelFilter::Info;
 
@@ -88,10 +94,11 @@ mod app {
     struct Shared {
         rx_transfer1: CircTransfer<Stream0<DMA1>, Rx<USART1, PB7<Alternate<7>>, DMA>, &'static mut [u8]>,
         tx_transfer1: TxTransfer<Stream1<DMA1>, Tx<USART1, PC4<Alternate<7>>, DMA>, Buffer<BUFFER_SIZE>, PA5<Output<PushPull>>>,
-        delay_tim6: DelayFromCountDownTimer<CountDownTimer<TIM6>>, 
+        delay: Delay,
         leds_state: LedState,
         led0: PB2<Output<PushPull>>,
         led1: PB3<Output<PushPull>>,
+        millis_from_start: u64, 
     }
 
     // Local resources to specific tasks (cannot be shared)
@@ -101,19 +108,9 @@ mod app {
         led2: PB5<Output<PushPull>>,
         led4: PB12<Output<PushPull>>,
         button: PC13<Input<PullDown>>,
-        timer: CountDownTimer<TIM7>,
+        timer7: CountDownTimer<TIM7>,
+        timer6: CountDownTimer<TIM6>,
         storage: Storage, 
-    }
-    
-    #[derive(Debug)]
-    pub enum Error {
-        ChannelNotFound(u8),
-        DutyOverflow(f32),
-        DmaBufferOverflow,
-        SerialTxBusy,
-        SerialTxNotStarted,
-        FlashError(stm32g4xx_hal::flash::Error),
-        StorageEmpty, 
     }
 
 
@@ -151,10 +148,14 @@ mod app {
         let mut rcc = rcc.freeze(clock_config, pwr);
         let mut syscfg = dp.SYSCFG.constrain();
 
+        let mut timer7 = Timer::new(dp.TIM7, &rcc.clocks);
+        let mut timer7 = timer7.start_count_down(20.millis());
+        timer7.listen(Event::TimeOut);
 
-        let mut timer = Timer::new(dp.TIM7, &rcc.clocks);
-        let mut timer = timer.start_count_down(20.millis());
-        timer.listen(Event::TimeOut);
+
+        let timer6 = Timer::new(dp.TIM6, &rcc.clocks);
+        let mut timer6 = timer6.start_count_down(1.millis());
+        timer6.listen(Event::TimeOut);
         
         let gpioa = dp.GPIOA.split(&mut rcc);
         let gpiob = dp.GPIOB.split(&mut rcc);
@@ -178,22 +179,10 @@ mod app {
                 PwmSettings::default()
             },
         };
-
-
-        let pwm_settings = PwmSettings::new(
-            1000,
-            5000,
-            1900,
-            2500,
-            20100,
-            50200,
-            200300,
-            20
-        );
         
-        let channels = PwmChannels::create(
-                               dp.TIM1, (gpioa.pa8, gpioa.pa9, gpioa.pa10, gpioa.pa11),
+        let mut channels = PwmChannels::create(
                                dp.TIM2, (gpioa.pa0, gpioa.pa1, gpiob.pb10, gpiob.pb11),
+                               dp.TIM1, (gpioa.pa8, gpioa.pa9, gpioa.pa10, gpioa.pa11),
                                dp.TIM3, (gpiob.pb4, gpioa.pa4, gpiob.pb0, gpiob.pb1),
                                dp.TIM4, (gpiob.pb6, gpioa.pa12, gpiob.pb8, gpiob.pb9),
                                dp.TIM8, gpioa.pa15,
@@ -201,7 +190,20 @@ mod app {
                                dp.TIM16, gpioa.pa6,
                                dp.TIM17, gpioa.pa7,
                                pwm_settings, &mut rcc);
+        channels.set_enabled_all(false);
+        channels.set_channel_duty(1, 0.7).unwrap();
+        
+        
         led2.set_high().unwrap();
+        
+        let mut bufff = [0u8; 256];
+        let rbuf = &mut bufff;
+
+
+
+        let crc = Crc::<u32>::new(&CRC_32_ISCSI);
+        let slice = to_slice_crc32(&pwm_settings, rbuf, crc).unwrap();
+        
 
 
 
@@ -281,11 +283,7 @@ mod app {
 
         use stm32g4xx_hal::time::ExtU32;
 
-
-        // let mut delay_syst = cp.SYST.delay(&rcc.clocks);
-        let timer6 = Timer::new(dp.TIM6, &rcc.clocks);
-        let mut delay_tim6 = DelayFromCountDownTimer::new(timer6.start_count_down(100.millis()));
-
+        let mut delay = cp.SYST.delay(&rcc.clocks);
 
 
         (
@@ -293,10 +291,11 @@ mod app {
             Shared {
                 rx_transfer1, 
                 tx_transfer1,
-                delay_tim6, 
+                delay,
                 leds_state: LedState::new(),
                 led0,
                 led1,
+                millis_from_start: 0
             },
             // Initialization of task local resources
             Local {
@@ -304,7 +303,8 @@ mod app {
                 led,
                 led4,
                 button,
-                timer,
+                timer6, 
+                timer7,
                 storage, 
             },
             // Move the monotonic timer to the RTIC run-time, this enables
@@ -323,15 +323,15 @@ mod app {
     }
 
 
-    #[task(binds = EXTI15_10, priority=2, local = [button, led4, storage], shared=[tx_transfer1, delay_tim6, leds_state])]
+    #[task(binds = EXTI15_10, priority=2, local = [button, led4, storage], shared=[tx_transfer1, delay, leds_state])]
     fn button_pressed(mut ctx: button_pressed::Context) {
         let btn = ctx.local.button;
         btn.clear_interrupt_pending_bit();
 
         // let eight_bytes = [0x78, 0x67, 0x15, 0x92, 0xac, 0xbe, 0x4d, 0x1fu8];
         // let mut flash_writer = ctx.local.flash.writer(FlashSize::Sz128K);
-        ctx.shared.delay_tim6.lock(|delay_tim6| {
-            delay_tim6.delay_ms(5_u32);
+        ctx.shared.delay.lock(|delay| {
+            delay.delay_ms(5_u32);
         });
         let down = btn.is_high().unwrap();
         if down {
@@ -341,8 +341,8 @@ mod app {
                     buf.add_str("pressed\n")
                 });
             });
-            ctx.shared.delay_tim6.lock(|delay_tim6| {
-                delay_tim6.delay_ms(500_u32);
+            ctx.shared.delay.lock(|delay| {
+                delay.delay_ms(500_u32);
             });
             
             let mut d = match ctx.local.storage.read() {
@@ -363,8 +363,8 @@ mod app {
                     PwmSettings::default()
                 },
             };
-            ctx.shared.delay_tim6.lock(|delay_tim6| {
-                delay_tim6.delay_ms(300_u32);
+            ctx.shared.delay.lock(|delay| {
+                delay.delay_ms(300_u32);
             });
             ctx.shared.tx_transfer1.lock(|tx_transfer| {
                 tx_transfer.send_silent(|buf| {
@@ -389,8 +389,8 @@ mod app {
                     buf.add_str("\n);\n")
                 });
             });
-            ctx.shared.delay_tim6.lock(|delay_tim6| {
-                delay_tim6.delay_ms(300_u32);
+            ctx.shared.delay.lock(|delay| {
+                delay.delay_ms(300_u32);
             });
             d.group1_freq_hz = d.group1_freq_hz + 50;
             d.group2_freq_hz = d.group2_freq_hz + 100;
@@ -407,8 +407,8 @@ mod app {
                     buf.add_str("Saving: ")
                 });
             });
-            ctx.shared.delay_tim6.lock(|delay_tim6| {
-                delay_tim6.delay_ms(300_u32);
+            ctx.shared.delay.lock(|delay| {
+                delay.delay_ms(300_u32);
             });
             let res_str = match ctx.local.storage.save(&d) {
                 Ok(_) => {
@@ -427,8 +427,8 @@ mod app {
                     buf.add_str("\n")
                 });
             });
-            ctx.shared.delay_tim6.lock(|delay_tim6| {
-                delay_tim6.delay_ms(300_u32);
+            ctx.shared.delay.lock(|delay| {
+                delay.delay_ms(300_u32);
             });
             
             
@@ -530,9 +530,9 @@ mod app {
         });
     }
 
-    #[task(binds = TIM7, priority=2, local = [timer, led, led2], shared=[rx_transfer1, tx_transfer1, led0, led1, leds_state, delay_tim6])]
-    fn tim2_irq(mut ctx: tim2_irq::Context) {
-        ctx.local.timer.clear_interrupt(Event::TimeOut);
+    #[task(binds = TIM7, priority=2, local = [timer7, led, led2], shared=[rx_transfer1, tx_transfer1, led0, led1, leds_state, delay, millis_from_start])]
+    fn tim7_irq(mut ctx: tim7_irq::Context) {
+        ctx.local.timer7.clear_interrupt(Event::TimeOut);
         ctx.local.led.toggle().unwrap();
         ctx.shared.rx_transfer1.lock(|rx_transfer: &mut CircTransfer<Stream0<DMA1>, Rx<USART1, PB7<Alternate<7>>, DMA>, &'static mut [u8]>| {
             if rx_transfer.timeout_lapsed() {
@@ -544,20 +544,11 @@ mod app {
                     if data.is_empty() {
                         break;
                     }
-                    let mut buffer = itoa::Buffer::new();
-                    let mut buffer2 = itoa::Buffer::new();
-                    let mut buffer3 = itoa::Buffer::new();
-                    let mut value_str = "[not in]";
-                    let mut led_str = "[not in]";
-                    let mut on_str = "[not in]";
                     if data.len() == 1 {
                         let value = data[0];
                         if value < 8 {
                             let on = (value & 0x04) >> 2;
                             let led = value & 0x03;
-                            value_str = buffer.format(value);
-                            led_str = buffer2.format(led);
-                            on_str = buffer3.format(on);
                             ctx.shared.leds_state.lock(|leds_state| {
                                 leds_state.set_high(led, on == 1);
                             });
@@ -566,20 +557,18 @@ mod app {
                                 leds_state.set_mask(value & 0x0F);
                             });
                         }
+                    } else {
+                        
                     }
 
                     ctx.shared.tx_transfer1.lock(|tx_transfer| {
                         tx_transfer.send_silent(|buf| {
                             buf.add_str("value: ")?;
-                            buf.add_str(value_str)?;
-                            buf.add_str("; led: ")?;
-                            buf.add_str(led_str)?;
-                            buf.add_str("; on: ")?;
-                            buf.add_str(on_str)
+                            buf.add(data)
                         });
                     });
-                    ctx.shared.delay_tim6.lock(|delay_tim6| {
-                        delay_tim6.delay_ms(300_u32);
+                    ctx.shared.delay.lock(|delay| {
+                        delay.delay_ms(300_u32);
                     });
 
                 }
@@ -595,6 +584,19 @@ mod app {
             led.set_state(leds_state.get_pin_state(1)).unwrap();
         });
         ctx.local.led2.set_state(if ERROR.load(Relaxed) { PinState::High } else { PinState::Low }).unwrap();
+        let millis_from_start: u64 = ctx.shared.millis_from_start.lock(|millis_from_start| {
+            *millis_from_start
+        });
+        ctx.shared.tx_transfer1.lock(|tx_transfer| {
+            tx_transfer.tick(millis_from_start);
+        });
+    }
+    
+    #[task(binds = TIM6_DACUNDER, priority=2, local = [timer6], shared=[millis_from_start])]
+    fn tim6_irq(mut ctx: tim6_irq::Context) {
+        ctx.shared.millis_from_start.lock(|millis_from_start| {
+            *millis_from_start += 1;
+        });
     }
 
 }

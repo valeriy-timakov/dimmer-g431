@@ -18,6 +18,10 @@ embedded-alloc = "0.5"
 embedded-hal = "0.2"
 embedded-dma = "0.1.2"
 itoa = "1.0.11"
+postcard = "1.0.10"
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+dimmer-communication = { path = "../../dimmer_communication" }
+crc = "3.2.1"
 
 [dependencies.stm32g4xx-hal]
 path = "../HALs/stm32g4xx-hal"

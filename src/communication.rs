@@ -123,7 +123,7 @@ impl <STREAM, PERIPHERAL, BUF, PIN> TxTransfer<STREAM, PERIPHERAL, BUF, PIN>
     }
 
     #[inline(always)]
-    pub fn tick(&mut self, curr_millis: u32) {
+    pub fn tick(&mut self, curr_millis: u64) {
         self.state_pin.tick(curr_millis);
     }
 }

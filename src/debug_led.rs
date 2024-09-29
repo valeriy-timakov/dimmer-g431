@@ -10,7 +10,7 @@ pub struct DebugLed<PIN> {
     on: &'static AtomicBool,
     led_blink_half_period_ms: u32,
     pin_is_on: bool,
-    last_pin_toggle_millis: u32,
+    last_pin_toggle_millis: u64,
 }
 
 impl <PIN> DebugLed<PIN>
@@ -51,11 +51,11 @@ impl <PIN> DebugLed<PIN>
         self.on.store(false, Relaxed);
     }
 
-    pub fn tick(&mut self, curr_millis: u32) {
+    pub fn tick(&mut self, curr_millis: u64) {
         if !self.busy.load(Relaxed) {
             let is_on = self.on.load(Relaxed);
             if is_on {
-                if curr_millis - self.last_pin_toggle_millis > self.led_blink_half_period_ms {
+                if (curr_millis - self.last_pin_toggle_millis) as u32 > self.led_blink_half_period_ms {
                     self.pin_is_on = !self.pin_is_on;
                     let is_high = self.pin_is_on ^ self.on_is_high;
                     let _ = self.pin.set_state(if is_high { PinState::High } else { PinState::Low });

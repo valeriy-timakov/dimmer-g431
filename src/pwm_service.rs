@@ -8,6 +8,11 @@ use stm32g4xx_hal::pwm::PwmExt;
 use stm32g4xx_hal::rcc::Rcc;
 use stm32g4xx_hal::stm32::{TIM1, TIM15, TIM16, TIM17, TIM2, TIM3, TIM4, TIM8};
 
+use serde::{Serialize, Deserialize};
+use crate::errors::Error;
+
+#[repr(C)]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Clone, Copy)]
 pub struct PwmSettings {
     pub group1_freq_hz: u32,
     pub group2_freq_hz: u32,
@@ -18,6 +23,7 @@ pub struct PwmSettings {
     pub group7_freq_hz: u32,
     pub group8_freq_hz: u32,
 }
+
 
 impl PwmSettings {
     
@@ -88,8 +94,8 @@ pub struct PwmChannels {
 
 
 impl PwmChannels {
-    pub(crate) fn create<F>(tim1: TIM1, pins1: (PA8<F>, PA9<F>, PA10<F>, PA11<F>),
-                            tim2: TIM2, pins2: (PA0<F>, PA1<F>, PB10<F>, PB11<F>),
+    pub(crate) fn create<F>(tim2: TIM2, pins2: (PA0<F>, PA1<F>, PB10<F>, PB11<F>),
+                            tim1: TIM1, pins1: (PA8<F>, PA9<F>, PA10<F>, PA11<F>),
                             tim3: TIM3, pins3: (PB4<F>, PA4<F>, PB0<F>, PB1<F>),
                             tim4: TIM4, pins4: (PB6<F>, PA12<F>, PB8<F>, PB9<F>),
                             tim8: TIM8, pin8: PA15<F>,
@@ -139,7 +145,7 @@ impl PwmChannels {
         }
     }
 
-    fn set_enabled_channel(&mut self, channel: u8, enabled: bool) -> Result<(), crate::app::Error> {
+    pub fn set_enabled_channel(&mut self, channel: u8, enabled: bool) -> Result<(), Error> {
         if channel < CHANNELS_32_COUNT as u8 {
             if enabled {
                 Ok(self.channels_32[channel as usize].enable())
@@ -153,13 +159,30 @@ impl PwmChannels {
                 Ok(self.channels_16[channel as usize - CHANNELS_32_COUNT].disable())
             }
         } else {
-            Err(crate::app::Error::ChannelNotFound(channel))
+            Err(Error::ChannelNotFound(channel))
         }
     }
 
-    fn set_channel_duty(&mut self, channel_no: u8, duty: f32) -> Result<(), crate::app::Error> {
+    pub fn set_enabled_all(&mut self, enabled: bool) {
+        for i in 0..CHANNELS_32_COUNT {
+            if enabled {
+                self.channels_32[i].enable();
+            } else {
+                self.channels_32[i].disable();
+            }
+        }
+        for i in 0..CHANNELS_16_COUNT {
+            if enabled {
+                self.channels_16[i].enable();
+            } else {
+                self.channels_16[i].disable();
+            }
+        }
+    }
+
+    pub fn set_channel_duty(&mut self, channel_no: u8, duty: f32) -> Result<(), Error> {
         if duty > 1.0 || duty < 0.0 {
-            return Err(crate::app::Error::DutyOverflow(duty));
+            return Err(Error::DutyOverflow(duty));
         }
         if channel_no < CHANNELS_32_COUNT as u8 {
             let channel = &mut self.channels_32[channel_no as usize];
@@ -175,13 +198,13 @@ impl PwmChannels {
             channel.enable();
             Ok(())
         } else {
-            Err(crate::app::Error::ChannelNotFound(channel_no))
+            Err(Error::ChannelNotFound(channel_no))
         }
     }
 
-    fn get_channel_duty(&mut self, channel_no: u8, duty: f32) -> Result<f32, crate::app::Error> {
+    pub fn get_channel_duty(&mut self, channel_no: u8, duty: f32) -> Result<f32, Error> {
         if duty > 1.0 || duty < 0.0 {
-            return Err(crate::app::Error::DutyOverflow(duty));
+            return Err(Error::DutyOverflow(duty));
         }
         if channel_no < CHANNELS_32_COUNT as u8 {
             let channel = &mut self.channels_32[channel_no as usize];
@@ -193,7 +216,7 @@ impl PwmChannels {
             let duty = channel.get_duty() as f32 / channel.get_max_duty() as f32;
             Ok(duty)
         } else {
-            Err(crate::app::Error::ChannelNotFound(channel_no))
+            Err(Error::ChannelNotFound(channel_no))
         }
     }
 
