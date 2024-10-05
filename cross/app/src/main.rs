@@ -72,6 +72,7 @@ mod app {
     use postcard::{to_slice_crc32};
     use crc::{Crc, CRC_32_ISCSI};
     use crate::errors::Error;
+    use crate::server::Server;
 
     const LOG_LEVEL: log::LevelFilter = log::LevelFilter::Info;
 
@@ -98,7 +99,9 @@ mod app {
         leds_state: LedState,
         led0: PB2<Output<PushPull>>,
         led1: PB3<Output<PushPull>>,
-        millis_from_start: u64, 
+        millis_from_start: u64,
+        server: Server,
+        storage: Storage,
     }
 
     // Local resources to specific tasks (cannot be shared)
@@ -110,7 +113,7 @@ mod app {
         button: PC13<Input<PullDown>>,
         timer7: CountDownTimer<TIM7>,
         timer6: CountDownTimer<TIM6>,
-        storage: Storage, 
+        channels: PwmChannels,
     }
 
 
@@ -193,21 +196,7 @@ mod app {
         channels.set_enabled_all(false);
         channels.set_channel_duty(1, 0.7).unwrap();
         
-        
         led2.set_high().unwrap();
-        
-        let mut bufff = [0u8; 256];
-        let rbuf = &mut bufff;
-
-
-
-        let crc = Crc::<u32>::new(&CRC_32_ISCSI);
-        let slice = to_slice_crc32(&pwm_settings, rbuf, crc.digest()).unwrap();
-        
-
-
-
-
 
         let tx = gpioc.pc4.into_alternate();
         let rx = gpiob.pb7.into_alternate();
@@ -295,7 +284,9 @@ mod app {
                 leds_state: LedState::new(),
                 led0,
                 led1,
-                millis_from_start: 0
+                millis_from_start: 0,
+                server: Server::new(),
+                storage,
             },
             // Initialization of task local resources
             Local {
@@ -305,7 +296,7 @@ mod app {
                 button,
                 timer6, 
                 timer7,
-                storage, 
+                channels,
             },
             // Move the monotonic timer to the RTIC run-time, this enables
             // scheduling
@@ -323,7 +314,7 @@ mod app {
     }
 
 
-    #[task(binds = EXTI15_10, priority=2, local = [button, led4, storage], shared=[tx_transfer1, delay, leds_state])]
+    #[task(binds = EXTI15_10, priority=2, local = [button, led4], shared=[tx_transfer1, delay, leds_state, storage])]
     fn button_pressed(mut ctx: button_pressed::Context) {
         let btn = ctx.local.button;
         btn.clear_interrupt_pending_bit();
@@ -345,7 +336,7 @@ mod app {
                 delay.delay_ms(500_u32);
             });
             
-            let mut d = match ctx.local.storage.read() {
+            let mut d = match ctx.shared.storage.lock(|s| {s.read()}) {
                 Ok(settings) => {
                     ctx.shared.tx_transfer1.lock(|tx_transfer| {
                         tx_transfer.send_silent(|buf| {
@@ -410,7 +401,7 @@ mod app {
             ctx.shared.delay.lock(|delay| {
                 delay.delay_ms(300_u32);
             });
-            let res_str = match ctx.local.storage.save(&d) {
+            let res_str = match ctx.shared.storage.lock(|s|{s.save(&d)}) {
                 Ok(_) => {
                     "Ok!\n"
                 }
@@ -530,66 +521,51 @@ mod app {
         });
     }
 
-    #[task(binds = TIM7, priority=2, local = [timer7, led, led2], shared=[rx_transfer1, tx_transfer1, led0, led1, leds_state, delay, millis_from_start])]
+    #[task(binds = TIM7, priority=2, local = [timer7, channels, led, led2], shared=[rx_transfer1, tx_transfer1, server, storage, led0, led1, leds_state, delay, millis_from_start])]
     fn tim7_irq(mut ctx: tim7_irq::Context) {
         ctx.local.timer7.clear_interrupt(Event::TimeOut);
         ctx.local.led.toggle().unwrap();
+        let millis_from_start: u64 = ctx.shared.millis_from_start.lock(|millis_from_start| {
+            *millis_from_start
+        });
         ctx.shared.rx_transfer1.lock(|rx_transfer: &mut CircTransfer<Stream0<DMA1>, Rx<USART1, PB7<Alternate<7>>, DMA>, &'static mut [u8]>| {
             if rx_transfer.timeout_lapsed() {
                 rx_transfer.clear_timeout();
 
-                let mut data = [0; 256];
-                loop {
-                    let data = rx_transfer.read_available(&mut data);
-                    if data.is_empty() {
-                        break;
-                    }
-                    if data.len() == 1 {
-                        let value = data[0];
-                        if value < 8 {
-                            let on = (value & 0x04) >> 2;
-                            let led = value & 0x03;
-                            ctx.shared.leds_state.lock(|leds_state| {
-                                leds_state.set_high(led, on == 1);
-                            });
-                        } else if value > 15 && value < 32 {
-                            ctx.shared.leds_state.lock(|leds_state| {
-                                leds_state.set_mask(value & 0x0F);
-                            });
-                        }
-                    } else {
-                        
-                    }
+                let mut data = [0; 1024];
 
-                    ctx.shared.tx_transfer1.lock(|tx_transfer| {
-                        tx_transfer.send_silent(|buf| {
-                            buf.add_str("value: ")?;
-                            buf.add(data)
-                        });
-                    });
-                    ctx.shared.delay.lock(|delay| {
-                        delay.delay_ms(300_u32);
-                    });
-
+                let data = rx_transfer.read_available(&mut data);
+                if data.is_empty() {
+                    return;
                 }
+                ctx.shared.tx_transfer1.lock(|tx_transfer| {
+                    let res = tx_transfer.send_silent(|buf| {
+                        ctx.shared.server.lock(|server| {
+                            ctx.shared.storage.lock(|storage| {
+                                ctx.shared.leds_state.lock(|leds_state| {
+                                    server.idle(data, buf, storage, ctx.local.channels, leds_state)
+                                })
+                            })
+                        })
+                    });
+                    tx_transfer.tick(millis_from_start);
+                    res
+                });
+                ctx.shared.delay.lock(|delay| {
+                    delay.delay_ms(300_u32);
+                });
             }
         });
-        let leds_state = ctx.shared.leds_state.lock(|leds_state| {
+        let leds_state_tmp = ctx.shared.leds_state.lock(|leds_state| {
             leds_state.clone()
         });
         ctx.shared.led0.lock(|led| {
-            led.set_state(leds_state.get_pin_state(0)).unwrap();
+            led.set_state(leds_state_tmp.get_pin_state(0)).unwrap();
         });
         ctx.shared.led1.lock(|led| {
-            led.set_state(leds_state.get_pin_state(1)).unwrap();
+            led.set_state(leds_state_tmp.get_pin_state(1)).unwrap();
         });
         ctx.local.led2.set_state(if ERROR.load(Relaxed) { PinState::High } else { PinState::Low }).unwrap();
-        let millis_from_start: u64 = ctx.shared.millis_from_start.lock(|millis_from_start| {
-            *millis_from_start
-        });
-        ctx.shared.tx_transfer1.lock(|tx_transfer| {
-            tx_transfer.tick(millis_from_start);
-        });
     }
     
     #[task(binds = TIM6_DACUNDER, priority=2, local = [timer6], shared=[millis_from_start])]

@@ -1,0 +1,12 @@
+[package]
+name = "dimmer-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serialport = "4.5.1"
+serde = { version = "1.0", features = ["derive"], optional = true }
+postcard = { version = "1.0.10", features = ["use-crc"] }
+clap = { version = "3.1.6", features = ["derive"] }
+dimmer-communication = { path = "../dimmer-communication" }
+crc = "3.2.1"

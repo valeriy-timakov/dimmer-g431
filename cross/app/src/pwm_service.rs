@@ -55,6 +55,69 @@ impl PwmSettings {
             group8_freq_hz: Self::DEFAULT_FREQ,
         }
     }
+
+    pub fn set_group_freq(&mut self, group: u8, freq: u32) -> Result<(), Error> {
+        match group {
+            0 => Ok(self.group1_freq_hz = freq),
+            1 => Ok(self.group2_freq_hz = freq),
+            2 => Ok(self.group3_freq_hz = freq),
+            3 => Ok(self.group4_freq_hz = freq),
+            4 => Ok(self.group5_freq_hz = freq),
+            5 => Ok(self.group6_freq_hz = freq),
+            6 => Ok(self.group7_freq_hz = freq),
+            7 => Ok(self.group8_freq_hz = freq),
+            _ => Err(Error::GroupNotFound(group)),
+        }
+    }
+
+    pub fn get_group_freq(&self, group: u8) -> Result<u32, Error> {
+        match group {
+            1 => Ok(self.group1_freq_hz),
+            2 => Ok(self.group2_freq_hz),
+            3 => Ok(self.group3_freq_hz),
+            4 => Ok(self.group4_freq_hz),
+            5 => Ok(self.group5_freq_hz),
+            6 => Ok(self.group6_freq_hz),
+            7 => Ok(self.group7_freq_hz),
+            8 => Ok(self.group8_freq_hz),
+            _ => Err(Error::GroupNotFound(group)),
+        }
+    }
+
+    pub fn set_all_groups_same_freq(&mut self, freq: u32) {
+        self.group1_freq_hz = freq;
+        self.group2_freq_hz = freq;
+        self.group3_freq_hz = freq;
+        self.group4_freq_hz = freq;
+        self.group5_freq_hz = freq;
+        self.group6_freq_hz = freq;
+        self.group7_freq_hz = freq;
+        self.group8_freq_hz = freq;
+    }
+
+    pub fn set_all_groups_freq(&mut self, freqs: [u32; 8]) {
+        self.group1_freq_hz = freqs[0];
+        self.group2_freq_hz = freqs[1];
+        self.group3_freq_hz = freqs[2];
+        self.group4_freq_hz = freqs[3];
+        self.group5_freq_hz = freqs[4];
+        self.group6_freq_hz = freqs[5];
+        self.group7_freq_hz = freqs[6];
+        self.group8_freq_hz = freqs[7];
+    }
+
+    pub fn get_all_groups_freq(&self) -> [u32; 8] {
+        [
+            self.group1_freq_hz,
+            self.group2_freq_hz,
+            self.group3_freq_hz,
+            self.group4_freq_hz,
+            self.group5_freq_hz,
+            self.group6_freq_hz,
+            self.group7_freq_hz,
+            self.group8_freq_hz,
+        ]
+    }
 }
 
 // 
@@ -86,8 +149,8 @@ pub struct PwmChannels {
     // ch6_2: PwmCh<TIM15, C2>,
     // ch7_1: PwmChComp<TIM16, C1>,
     // ch8_1: PwmChComp<TIM17, C1>,
-    channels_32: [Box<dyn PwmPin<Duty=u32>>; CHANNELS_32_COUNT],
-    channels_16: [Box<dyn PwmPin<Duty=u16>>; CHANNELS_16_COUNT],
+    channels_32: [Box<dyn PwmPin<Duty=u32> + Send>; CHANNELS_32_COUNT],
+    channels_16: [Box<dyn PwmPin<Duty=u16> + Send>; CHANNELS_16_COUNT],
 }
 
 
@@ -179,7 +242,22 @@ impl PwmChannels {
         }
     }
 
-    pub fn set_channel_duty(&mut self, channel_no: u8, duty: f32) -> Result<(), Error> {
+    pub fn set_all_duty(&mut self, duty: f32) {
+        for i in 0..CHANNELS_32_COUNT {
+            let channel = &mut self.channels_32[i];
+            let duty = (duty * channel.get_max_duty() as f32) as u32;
+            channel.set_duty(duty);
+            channel.enable();
+        }
+        for i in 0..CHANNELS_16_COUNT {
+            let channel = &mut self.channels_16[i];
+            let duty = (duty * channel.get_max_duty() as f32) as u16;
+            channel.set_duty(duty);
+            channel.enable();
+        }
+    }
+
+    pub fn set_channel_duty(&mut self, channel_no: u8, duty: f32) -> Result<f32, Error> {
         if duty > 1.0 || duty < 0.0 {
             return Err(Error::DutyOverflow(duty));
         }
@@ -188,23 +266,22 @@ impl PwmChannels {
             let duty = (duty * channel.get_max_duty() as f32) as u32;
             channel.set_duty(duty);
             channel.enable();
-            Ok(())
+            let duty = channel.get_duty() as f32 / channel.get_max_duty() as f32;
+            Ok(duty)
         } else if channel_no < (CHANNELS_16_COUNT +CHANNELS_32_COUNT) as u8 {
             let channel =
                 &mut self.channels_16[channel_no as usize - CHANNELS_32_COUNT];
             let duty = (duty * channel.get_max_duty() as f32) as u16;
             channel.set_duty(duty);
             channel.enable();
-            Ok(())
+            let duty = channel.get_duty() as f32 / channel.get_max_duty() as f32;
+            Ok(duty)
         } else {
             Err(Error::ChannelNotFound(channel_no))
         }
     }
 
-    pub fn get_channel_duty(&mut self, channel_no: u8, duty: f32) -> Result<f32, Error> {
-        if duty > 1.0 || duty < 0.0 {
-            return Err(Error::DutyOverflow(duty));
-        }
+    pub fn get_channel_duty(&mut self, channel_no: u8) -> Result<f32, Error> {
         if channel_no < CHANNELS_32_COUNT as u8 {
             let channel = &mut self.channels_32[channel_no as usize];
             let duty = channel.get_duty() as f32 / channel.get_max_duty() as f32;
@@ -217,6 +294,10 @@ impl PwmChannels {
         } else {
             Err(Error::ChannelNotFound(channel_no))
         }
+    }
+
+    pub fn get_channels_count(&self) -> u8 {
+        (CHANNELS_16_COUNT + CHANNELS_32_COUNT) as u8
     }
 
 }
