@@ -9,6 +9,7 @@ use stm32g4xx_hal::rcc::Rcc;
 use stm32g4xx_hal::stm32::{TIM1, TIM15, TIM16, TIM17, TIM2, TIM3, TIM4, TIM8};
 
 use serde::{Serialize, Deserialize};
+use dimmer_communication::{CHANNELS_16_COUNT, CHANNELS_32_COUNT, CHANNELS_COUNT};
 use crate::errors::Error;
 
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Clone, Copy)]
@@ -123,9 +124,7 @@ impl PwmSettings {
 // 
 // type PwmChComp<TIM, CHANNEL> = Pwm<TIM, CHANNEL, ComplementaryDisabled, ActiveHigh, ActiveHigh>;
 // type PwmCh<TIM, CHANNEL> = Pwm<TIM, CHANNEL, ComplementaryImpossible, ActiveHigh, ActiveHigh>;
-// 
-const CHANNELS_16_COUNT: usize = 17;
-const CHANNELS_32_COUNT: usize = 4;
+//
 
 pub struct PwmChannels {
     // ch1_1: PwmChComp<TIM1, C1>,
@@ -225,7 +224,24 @@ impl PwmChannels {
         }
     }
 
-    pub fn set_enabled_all(&mut self, enabled: bool) {
+    pub fn set_enabled_all(&mut self, enabled: [bool; CHANNELS_COUNT]) {
+        for i in 0..CHANNELS_32_COUNT {
+            if enabled[i] {
+                self.channels_32[i].enable();
+            } else {
+                self.channels_32[i].disable();
+            }
+        }
+        for i in 0..CHANNELS_16_COUNT {
+            if enabled[i + CHANNELS_32_COUNT] {
+                self.channels_16[i].enable();
+            } else {
+                self.channels_16[i].disable();
+            }
+        }
+    }
+
+    pub fn set_enabled_all_same(&mut self, enabled: bool) {
         for i in 0..CHANNELS_32_COUNT {
             if enabled {
                 self.channels_32[i].enable();
@@ -242,7 +258,7 @@ impl PwmChannels {
         }
     }
 
-    pub fn set_all_duty(&mut self, duty: f32) {
+    pub fn set_all_duties_same(&mut self, duty: f32) {
         for i in 0..CHANNELS_32_COUNT {
             let channel = &mut self.channels_32[i];
             let duty = (duty * channel.get_max_duty() as f32) as u32;
@@ -252,6 +268,21 @@ impl PwmChannels {
         for i in 0..CHANNELS_16_COUNT {
             let channel = &mut self.channels_16[i];
             let duty = (duty * channel.get_max_duty() as f32) as u16;
+            channel.set_duty(duty);
+            channel.enable();
+        }
+    }
+
+    pub fn set_all_duties(&mut self, duties: [f32; CHANNELS_COUNT]) {
+        for i in 0..CHANNELS_32_COUNT {
+            let channel = &mut self.channels_32[i];
+            let duty = (duties[i] * channel.get_max_duty() as f32) as u32;
+            channel.set_duty(duty);
+            channel.enable();
+        }
+        for i in 0..CHANNELS_16_COUNT {
+            let channel = &mut self.channels_16[i];
+            let duty = (duties[i + CHANNELS_32_COUNT] * channel.get_max_duty() as f32) as u16;
             channel.set_duty(duty);
             channel.enable();
         }

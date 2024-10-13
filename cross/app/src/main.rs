@@ -72,6 +72,7 @@ mod app {
     use postcard::{to_slice_crc32};
     use crc::{Crc, CRC_32_ISCSI};
     use crate::errors::Error;
+    use crate::get_device_id;
     use crate::server::Server;
 
     const LOG_LEVEL: log::LevelFilter = log::LevelFilter::Info;
@@ -173,7 +174,7 @@ mod app {
         let mut led4 = gpiob.pb12.into_push_pull_output();
 
         let mut storage: Storage = Storage::new(dp.FLASH.constrain());
-        let pwm_settings = match storage.read_or_create() {
+        let pwm_settings = match storage.read_or_create_pwm_settings() {
             Ok(settings) => settings,
             Err(Error::FlashError(_)) => {
                 PwmSettings::default()
@@ -193,7 +194,7 @@ mod app {
                                dp.TIM16, gpioa.pa6,
                                dp.TIM17, gpioa.pa7,
                                pwm_settings, &mut rcc);
-        channels.set_enabled_all(false);
+        channels.set_enabled_all_same(false);
         channels.set_channel_duty(1, 0.7).unwrap();
         
         led2.set_high().unwrap();
@@ -273,6 +274,11 @@ mod app {
         use stm32g4xx_hal::time::ExtU32;
 
         let mut delay = cp.SYST.delay(&rcc.clocks);
+        
+        let device_settings = match storage.read_device_settings() {
+            Ok(settings) => Some(settings),
+            Err(_) => None,
+        };
 
 
         (
@@ -285,7 +291,7 @@ mod app {
                 led0,
                 led1,
                 millis_from_start: 0,
-                server: Server::new(),
+                server: Server::new(get_device_id(), device_settings.map(|s| s.device_no)),
                 storage,
             },
             // Initialization of task local resources
@@ -336,7 +342,7 @@ mod app {
                 delay.delay_ms(500_u32);
             });
             
-            let mut d = match ctx.shared.storage.lock(|s| {s.read()}) {
+            let mut d = match ctx.shared.storage.lock(|s| {s.read_pwm_settings()}) {
                 Ok(settings) => {
                     ctx.shared.tx_transfer1.lock(|tx_transfer| {
                         tx_transfer.send_silent(|buf| {
@@ -401,7 +407,7 @@ mod app {
             ctx.shared.delay.lock(|delay| {
                 delay.delay_ms(300_u32);
             });
-            let res_str = match ctx.shared.storage.lock(|s|{s.save(&d)}) {
+            let res_str = match ctx.shared.storage.lock(|s|{s.save_pwm_settings(&d)}) {
                 Ok(_) => {
                     "Ok!\n"
                 }
@@ -539,17 +545,19 @@ mod app {
                     return;
                 }
                 ctx.shared.tx_transfer1.lock(|tx_transfer| {
-                    let res = tx_transfer.send_silent(|buf| {
+                    tx_transfer.send_silent(|buf| {
                         ctx.shared.server.lock(|server| {
                             ctx.shared.storage.lock(|storage| {
                                 ctx.shared.leds_state.lock(|leds_state| {
-                                    server.idle(data, buf, storage, ctx.local.channels, leds_state)
+                                    ctx.local.led2.set_high().unwrap();
+                                    let res = server.idle(data, buf, storage, ctx.local.channels, leds_state);
+                                    ctx.local.led2.set_low().unwrap();
+                                    res
                                 })
                             })
                         })
                     });
                     tx_transfer.tick(millis_from_start);
-                    res
                 });
                 ctx.shared.delay.lock(|delay| {
                     delay.delay_ms(300_u32);
@@ -593,4 +601,11 @@ fn panic(_info: &PanicInfo) -> ! {
     }
 }
 
+
+fn get_device_id() -> [u32;3] {
+    unsafe {
+        let ptr =  0x1FFF_7590 as *const u32;
+        [ptr.read_volatile(), (ptr.offset(1)).read_volatile(), (ptr.offset(2)).read_volatile()]
+    }
+}
 

@@ -1,23 +1,47 @@
-mod communication_thead;
-
-use serialport::{available_ports, SerialPort, SerialPortType};
-use std::io::{self, Read, Write};
-use std::str::FromStr;
-use std::thread::spawn;
+use std::sync::mpsc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::thread::{JoinHandle as StdJoinHandle, sleep, spawn};
+use std::thread;
 use std::time::{Duration, SystemTime};
 
-use clap::{Arg, ArgMatches, Command};
-
+use clap::{Arg, Command};
+use serialport::{available_ports};
 use serialport::{DataBits, StopBits};
-use crate::Error::{NoData, NumberFormat};
-use std::sync::mpsc;
-use std::thread;
-use crc::{Crc, CRC_32_ISCSI};
-use postcard::{from_bytes_crc32, to_slice_crc32};
-use dimmer_communication::{CHANNELS_COUNT, ClientCommand, ClientCommandResult, GROUPS_COUNT};
-use dimmer_communication::ClientCommandResultType::SetChannelEnabled;
-use crate::communication_thead::{CommunicationThread, CommunicationThreadCommand};
-use crate::communication_thead::CommunicationThreadCommand::{DimmerCommand, Stop};
+use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::mpsc::Sender as TokioSender;
+use dimmer_communication::ClientCommandResult;
+
+use errors::Error::{NoData, NumberFormat};
+use errors::Error;
+
+use crate::cli::{CliSignal, spawn_cli};
+use crate::communication_thead::{CommunicationThread, CommunicationThreadCommand, CommunicationThreadSignal};
+use crate::communication_thead::CommunicationThreadCommand::Stop;
+use crate::run_commands_parser::get_connect_data_from_arguments;
+
+mod communication_thead;
+mod cli;
+mod errors;
+mod run_commands_parser;
+mod http;
+mod event_manager;
+
+use std::collections::HashMap;
+use std::future::Future;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use log::{debug, error};
+use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
+use tokio::task;
+use tokio::task::JoinHandle;
+use crate::event_manager::EventManager;
+use crate::http::spawn_http;
+
+
+const SYNC_CHANNELS_BUFFER_SIZE: usize = 100;
+
+
 
 struct PortData {
     port_name: String,
@@ -28,245 +52,346 @@ struct PortData {
     receive_timeout: Duration,
 }
 
+#[derive(Debug)]
 enum AppCommand {
     CommunicationCommand(CommunicationThreadCommand),
     Exit,
 }
 
-fn main() {
+#[derive(Serialize, Deserialize, Debug)]
+enum AppCommandResult {
+    CommunicationCommandResult(CommunicationThreadSignal),
+}
+
+impl AppCommandResult {
+    fn id(&self) -> Option<u32> {
+        match self {
+            AppCommandResult::CommunicationCommandResult(signal) => signal.id(),
+        }
+    }
+}
+
+struct AppCommandsHandler {
+    communication_in_tx: Sender<CommunicationThreadCommand>,
+    
+}
+
+
+//impl Send for ExitHandler {}
+
+
+
+#[tokio::main]
+async fn main() {
+
+   
+    
+    
+    env_logger::init();
     let port_data = get_connect_data_from_arguments().unwrap();
+    
+    let app = App::new();
+    let app = Arc::new(Mutex::new(app));
+    
+    let tmp_app = app.clone();
 
-    let port = serialport::new(&port_data.port_name, port_data.baud_rate)
-        .timeout(Duration::from_millis(10))
-        .open();
-
-    match port {
-        Ok(port) => {
-            println!("Receiving data on {} at {} baud:", &port_data.port_name, &port_data.baud_rate);
-            let (answer_sender, rx) = mpsc::channel();
-            let(tx, command_source) = mpsc::channel();
-            let mut communication_thread = CommunicationThread::new(port,
-                command_source, answer_sender, Duration::from_millis(100));
-            let communication_thread_instance = spawn(move || communication_thread.run());
+            
+            let (cli_out_tx, mut cli_out_rx) = 
+                tokio::sync::mpsc::channel(SYNC_CHANNELS_BUFFER_SIZE);
+            let (cli_in_tx, cli_in_rx) =
+                tokio::sync::mpsc::channel(SYNC_CHANNELS_BUFFER_SIZE);
+            
+            let cli = spawn_cli(cli_out_tx, cli_in_rx);
+            
+            let http = spawn_http(([127, 0, 0, 1], 3030), app.clone());
+            
             loop {
-                let mut in_buff = String::new();
-                io::stdin().read_line(&mut in_buff).expect("Error reading input!");
-                let mut parts = in_buff.trim().split_whitespace();
-                if let Some(command) = parts.next() {
-                    match command {
-                        "set_channel_enabled" => {
-                            if let (Some(channel), Some(enabled)) = (parts.next(), parts.next()) {
-                                let channel = parse_channel_or_show_error(channel.trim());
-                                let enabled = parse_bool_or_show_error(enabled.trim());
-                                if let (Some((channel, enabled))) = channel.zip(enabled) {
-                                    println!(
-                                        "Команда: {}, Канал: {}, Статус: {}",
-                                        command, channel, enabled
-                                    );
-                                    let command = ClientCommand {
-                                        id: 0,
-                                        data: dimmer_communication::ClientCommandType::SetChannelEnabled { channel, enabled },
-                                    };
-                                    tx.send(DimmerCommand(command)).unwrap();
-                                    println!("Команда відправлена");
+                if let (mut app) = app.lock().await {
+                    app.try_recv();
+                    match cli_out_rx.try_recv() {
+                        Ok(command) => {
+                            match app.process_command(command).await {
+                                Ok(result) => {
+                                    debug!("Answer: {:?}", result);
                                 }
-                            } else {
-                                println!("Невірний формат для команди 'set_channel_enabled'");
+                                Err(e) => {
+                                    error!("Error: {:?}", e);
+                                }
                             }
                         }
-                        "exit" => {
-                            tx.send(Stop).unwrap();
-                            let stop_started = SystemTime::now();
-                            while !communication_thread_instance.is_finished() {
-                                if SystemTime::now().duration_since(stop_started).unwrap().as_secs() > 1 {
-                                    break;
-                                }
-                                thread::sleep(Duration::from_millis(100));
-                            }
-                            break;
-                        }
-                        _ => {
-                            println!("Unknown command: {}", command);
+                        Err(TryRecvError::Empty) => {},
+                        Err(TryRecvError::Disconnected) => {
+                            eprintln!("CLI disconnected!");
                         }
                     }
+                    if app.is_exit_started() {
+                        break;
+                    }
                 }
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to open \"{}\". Error: {}", port_data.port_name, e);
-            ::std::process::exit(1);
+            }    
+            cli.await; 
+            http.await;
+            app.lock().await.exit_handler();
+
+}
+
+struct CommunicationData {
+    in_tx: Sender<CommunicationThreadCommand>,
+    out_rx: Receiver<CommunicationThreadSignal>,
+    thread_join: StdJoinHandle<()>,
+}
+
+struct  App {
+    future_manager: FutureManager,
+    dimmer: Option<CommunicationData>,
+    exit_started: bool,
+    
+}
+
+
+impl App {
+    
+    fn new() -> Self {
+        Self {
+            future_manager: FutureManager::new(),
+            dimmer: None,
+            exit_started: false,
         }
     }
     
-    println!("Enter command")
-
-}
-
-fn parse_command(input: &str) -> Option<AppCommand> {
-    let mut parts = input.trim().split_whitespace();
-    if let Some(command) = parts.next() {
-        match command {
-            "set_channel_enabled" => {
-                if let (Some(channel), Some(enabled)) = (parts.next(), parts.next()) {
-                    let channel = parse_channel_or_show_error(channel.trim());
-                    let enabled = parse_bool_or_show_error(enabled.trim());
-                    if let (Some((channel, enabled))) = channel.zip(enabled) {
-                        return Some(AppCommand::CommunicationCommand(DimmerCommand(
-                            ClientCommand::set_channel_enabled(0, channel, enabled))));
-                    }
+    fn is_exit_started(&self) -> bool {
+        self.exit_started
+    }
+    
+    fn exit_handler(&self) {
+        if let Some(dimmer) = self.dimmer.as_ref() {   
+            debug!("Повторний запуск вимкнення...");
+            match dimmer.in_tx.send(Stop) {
+                Ok(()) => {
+                    debug!("Вимкнення заплановано");
+                }
+                Err(e) => {
+                    error!("Error sending exit signal to communication thread: {}. Maybe it is already shut down...", e);
                 }
             }
-            "exit" => {
-                return Some(AppCommand::Exit);
+            let stop_started = SystemTime::now();
+            while !dimmer.thread_join.is_finished() {
+                if SystemTime::now().duration_since(stop_started).unwrap().as_secs() > 10 {
+                    break;
+                }
+                sleep(Duration::from_millis(100));
             }
-            _ => {
-                println!("Unknown command: {}", command);
+            debug!("Вимкнення завершено - вихію з програми");
+        }
+    }
+    
+    fn connect_to_dimmer(&mut self, port_data: PortData) -> Result<(), Error> {
+
+        let port = serialport::new(&port_data.port_name, port_data.baud_rate)
+            .timeout(Duration::from_millis(10))
+            .open();
+        
+        let port = port.map_err(Error::SerialPortError)?;
+
+        debug!("Receiving data on {} at {} baud:", &port_data.port_name, &port_data.baud_rate);
+        let (out_tx, out_rx) = mpsc::channel();
+        let(in_tx, in_rx) = mpsc::channel();
+        let mut thread = CommunicationThread::new(
+            port, in_rx, out_tx, Duration::from_millis(100));
+        let thread_join = spawn(move || thread.run());
+
+        let communication_data = CommunicationData {
+            in_tx,
+            out_rx,
+            thread_join,
+        };
+        
+        if let Some(old_dimmer) = self.dimmer.take() {
+            //ignore errors
+            let _ = old_dimmer.in_tx.send(Stop);
+        }
+        
+        self.dimmer = Some(communication_data);
+        
+        Ok(())
+          
+    }
+    
+    fn try_recv(&mut self) {
+        if let Some(dimmer) = self.dimmer.as_ref() {
+            match dimmer.out_rx.try_recv() {
+                Ok(signal) => {
+                    self.handle_command_result(Ok(AppCommandResult::CommunicationCommandResult(signal)));
+                }
+                Err(mpsc::TryRecvError::Empty) => {},
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    error!("Communication thread disconnected!");
+                }
             }
         }
     }
-    None
+    
+    async fn handle_command_result(&mut self, result: Result<AppCommandResult, Error>) {
+        match result { 
+            Ok(result) => {
+                debug!("Answer: {:?}", result);
+                if let Some(id) = result.id() {
+                    debug!("Answer id: {:?}", id);
+                    match self.future_manager.execute_future(id, result).await {
+                        Ok(()) => {
+                            debug!("Answer: handled");                            
+                        }
+                        Err(e) => {
+                            error!("Error: {}", e);
+                        }
+                    }
+                } 
+            }
+            Err(processing_error) => {
+                error!("Error: {:?}", processing_error);
+            }
+        }
+    }
+    
+    async fn process_command(&mut self, command: AppCommand) -> Result<AppCommandResult, Error> {
+        // Створюємо новий ф'ючерс.
+        let (id, receiver) = self.future_manager.create_future().await;
+        let result = match command {
+            AppCommand::CommunicationCommand(mut command) => {
+                command.set_id(id);
+                debug!("Команда: {:?}", command);
+                match self.dimmer.as_ref() { 
+                    Some(dimmer) => {
+                        dimmer.in_tx.send(command).unwrap();
+                        debug!("Команда відправлена");
+                        Ok(())
+                    }
+                    None => {
+                        error!("Помилка відправки команди - немає з'єднання!");
+                        Err(Error::NoSerialConnection)
+                    }
+                }
+            }
+            AppCommand::Exit => {
+                if let Some(dimmer) = self.dimmer.as_ref() {
+                    debug!("Старт вимкнення...");
+                    match dimmer.in_tx.send(Stop) {
+                        Ok(()) => {
+                            debug!("Вимкнення завершено - вихід з програми");
+                        }
+                        Err(e) => {
+                            error!("Error sending exit signal to communication thread: {}. Maybe it is already shut down...", e);
+                        }
+                    }
+                    self.exit_started = true;
+                }
+                Ok(())
+            }
+        };
+        
+        match  result { 
+            Ok(()) => {
+                receiver.await.map_err(Error::RecvError)
+            }
+            Err(e) => {
+                Err(e)
+            }
+        }
+    }
 }
 
-fn parse_bool_or_show_error(value: &str) -> Option<bool> {
-    value.parse()
-        .inspect_err(
-            |_| println!("Value should be true or false! Entered: {}", value))
-        .ok()
-}
-
-fn parse_duty_or_show_error(value: &str) -> Option<f32> {
-    value.parse()
-        .inspect_err(
-            |_| println!("Value should be a valid duty - decimal number from 0.0 to 1.0! Entered: {}", value))
-        .ok()
-}
-
-fn parse_channel_or_show_error(value: &str) -> Option<u8> {
-    value.parse()
-        .inspect_err(
-            |_| println!("Value should be number of channel - from 0 up to {}! Entered: {}", CHANNELS_COUNT - 1, value))
-        .ok()
-}
-
-fn parse_channels_group_or_show_error(value: &str) -> Option<u8> {
-    value.parse()
-        .inspect_err(
-            |_| println!("Value should be number of channels group - from 0 up to {}! Entered: {}", GROUPS_COUNT - 1, value))
-        .ok()
-}
-
-fn parse_channel_enabled_or_show_error(channel: &str, enabled: &str) -> Option<(u8, bool)> {
-    let enabled: Option<bool> = enabled.parse()
-        .inspect_err(
-            |_| println!("enabled should be true or false! Entered: {}", enabled))
-        .ok();
-    let channel: Option<u8> = channel.parse()
-        .inspect_err(
-            |_| println!("channel should be number up to 22! Entered: {}", channel))
-        .ok();
-    channel.zip(enabled)
-
-}
-
-
-#[derive(Debug)]
-enum Error {
-    Io(serialport::Error),
-    Clap(clap::Error),
-    NoData(String), 
-    NumberFormat(std::num::ParseIntError),
-}
-
-fn get_connect_data_from_arguments() ->Result<PortData, Error> {
-    let ports = available_ports().map_err(Error::Io)?;
-    let port_names: Vec<String> = ports.iter().map(|port| port.port_name.clone()).collect();
-    println!("Available ports: {:?}", port_names);
-
-    let matches = Command::new("Open serial port")
-        .about("Enter data for serial port connection")
-        .disable_version_flag(true)
-        .arg(
-            Arg::new("port")
-                .help("The device path to a serial port")
-                .takes_value(true)
-                .required(true),
-        )
-        .arg(
-            Arg::new("baud")
-                .help("The baud rate to connect at")
-                .takes_value(true)
-                .possible_values(["4800", "9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600"])
-                .use_value_delimiter(false)
-                .required(true),
-        )
-        .arg(
-            Arg::new("stop-bits")
-                .long("stop-bits")
-                .help("Number of stop bits to use")
-                .takes_value(true)
-                .possible_values(["1", "2"])
-                .default_value("1"),
-        )
-        .arg(
-            Arg::new("data-bits")
-                .long("data-bits")
-                .help("Number of data bits to use")
-                .takes_value(true)
-                .possible_values(["5", "6", "7", "8"])
-                .default_value("8"),
-        )
-        .arg(
-            Arg::new("rate")
-                .long("rate")
-                .help("Frequency (Hz) to repeat reciving data")
-                .takes_value(true)
-                .validator(valid_number)
-                .default_value("1"),
-        )
-        .arg(
-            Arg::new("timeout")
-                .long("receive data wait timeout")
-                .help("Millis (ms) to wait data from rx")
-                .takes_value(true)
-                .default_value("1"),
-        )
-        .get_matches();
-
-    let port_name = matches.value_of("port").ok_or(NoData("No port name provided!".to_string()))?;
-    let baud_rate = matches.value_of("baud").ok_or(NoData("No baud rate provided!".to_string()))?
-        .parse::<u32>().map_err(NumberFormat)?;
-    let stop_bits = match matches.value_of("stop-bits") {
-        Some("2") => StopBits::Two,
-        _ => StopBits::One,
-    };
-    let data_bits = match matches.value_of("data-bits") {
-        Some("5") => DataBits::Five,
-        Some("6") => DataBits::Six,
-        Some("7") => DataBits::Seven,
-        _ => DataBits::Eight,
-    };
-
-    let refresh_rate_hz = matches.value_of("rate").ok_or(NoData("No refresh rate provided!".to_string()))?
-        .parse::<u32>().map_err(NumberFormat)?;
-    let refresh_rate = Duration::from_micros( (1000000 / refresh_rate_hz) as u64);
-
-    let receive_timeout_ms = matches.value_of("timeout").ok_or(NoData("No receive timeout provided!".to_string()))?
-        .parse::<u64>().map_err(NumberFormat)?;
-    let receive_timeout = Duration::from_millis(receive_timeout_ms);
-
-    Ok(PortData {
-        port_name: port_name.to_string(),
-        baud_rate,
-        stop_bits,
-        data_bits,
-        refresh_rate,
-        receive_timeout,
-    })
+async fn exit_app(
+    communication_in_tx: &Sender<CommunicationThreadCommand>, 
+    communication_thread_instance: StdJoinHandle<()>, 
+    cli_in_tx: TokioSender<CliSignal>, 
+   // cli: impl Future<Output=TokioJoinHandle<Result<(), Error>>> + Sized
+) -> Result<(), Error> {
+    println!("Старт вимкнення...");
+    communication_in_tx.send(Stop).unwrap();
+    if let Err(e) = cli_in_tx.send(CliSignal::Exit).await {
+        eprintln!("Error sending exit signal to CLI: {}. Maybe it is already shut down...", e);
+    }
+    let stop_started = SystemTime::now();
+    while !communication_thread_instance.is_finished() {
+        if SystemTime::now().duration_since(stop_started).unwrap().as_secs() > 10 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+   // cli.await;
+    println!("Вимкнення завершено - вихію з програми");
+    Ok(())
 }
 
 
-fn valid_number(val: &str) -> Result<(), String> {
-    val.parse::<u32>()
-        .map(|_| ())
-        .map_err(|_| format!("Invalid number '{}' specified", val))
+// Структура, яка представляє ф'ючерс та приймає значення.
+struct ManagedFuture {
+    // Канал для передачі даних у ф'ючерс.
+    sender: Option<oneshot::Sender<AppCommandResult>>,
 }
+
+impl ManagedFuture {
+    // Створюємо новий ф'ючерс та повертаємо структуру з каналом.
+    fn new() -> (Self, oneshot::Receiver<AppCommandResult>) {
+        let (sender, receiver) = oneshot::channel();
+        (Self { sender: Some(sender) }, receiver)
+    }
+
+    // Метод для виконання ф'ючерса, який приймає значення та передає його у ф'ючерс через канал.
+    fn complete(&mut self, result: AppCommandResult) {
+        if let Some(sender) = self.sender.take() {
+            // Передаємо значення у ф'ючерс.
+            let _ = sender.send(result);
+        }
+    }
+}
+
+struct FutureManager {
+    // Мапа для зберігання ф'ючерсів за їх ID.
+    futures: Arc<Mutex<HashMap<u32, ManagedFuture>>>,
+    // Лічильник для генерації унікальних ID.
+    id_counter: Arc<Mutex<u32>>,
+}
+
+impl FutureManager {
+    // Конструктор, який ініціалізує мапу та лічильник.
+    fn new() -> Self {
+        Self {
+            futures: Arc::new(Mutex::new(HashMap::new())),
+            id_counter: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    // Метод для створення нового ф'ючерсу, додавання його до мапи та повернення ID та каналу.
+    async  fn create_future(&self) -> (u32, oneshot::Receiver<AppCommandResult>) {
+        // Генеруємо новий унікальний ID.
+        let mut id_counter = self.id_counter.lock().await;
+        *id_counter += 1;
+        let id = *id_counter;
+
+        // Створюємо новий ф'ючерс.
+        let (managed_future, receiver) = ManagedFuture::new();
+
+        // Додаємо ф'ючерс у мапу.
+        let mut futures = self.futures.lock().await;
+        futures.insert(id, managed_future);
+
+        // Повертаємо ID ф'ючерсу та канал для прийому значень.
+        (id, receiver)
+    }
+
+    // Метод для виконання ф'ючерсу за його ID та передавання значення у цей ф'ючерс.
+    async fn execute_future(&self, id: u32, value: AppCommandResult) -> Result<(), String> {
+        let mut futures = self.futures.lock().await;
+
+        // Знаходимо ф'ючерс за ID.
+        if let Some(future) = futures.get_mut(&id) {
+            // Виконуємо ф'ючерс з переданим значенням.
+            future.complete(value);
+            Ok(())
+        } else {
+            Err(format!("Ф'ючерс з ID {} не знайдено.", id))
+        }
+    }
+}
+

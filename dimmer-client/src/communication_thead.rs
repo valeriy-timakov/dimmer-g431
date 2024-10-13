@@ -6,27 +6,73 @@ use crc::{Crc, CRC_32_ISCSI};
 use postcard::{from_bytes_crc32, to_slice_crc32};
 use serialport::SerialPort;
 use dimmer_communication::{ClientCommand, ClientCommandResult};
-use dimmer_communication::ClientCommandResultType::SetChannelEnabled;
-use crate::communication_thead::CommunicationThreadSignal::{DimmerCommandAnswer};
+use log::{  debug, error};
+use serde::{Deserialize, Serialize};
 
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
 pub enum CommunicationThreadCommand {
     Stop,
     DimmerCommand(ClientCommand),
-    GetRunStatistics,
+    GetRunStatistics(u32),
 }
 
+impl CommunicationThreadCommand {
+    pub fn set_id(&mut self, id: u32) {
+        match self {
+            CommunicationThreadCommand::DimmerCommand(command) => {
+                command.id = id;
+            }
+            CommunicationThreadCommand::GetRunStatistics(_id) => {
+                *_id = id;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
 pub enum CommunicationThreadSignal {
-    Stop,
     DimmerCommandAnswer(ClientCommandResult),
     RunStatistics(RunStatistics),
 }
 
-#[derive(Debug, Clone)]
-pub struct RunStatistics {
+impl CommunicationThreadSignal {
+    pub fn id(&self) -> Option<u32> {
+        match self {
+            CommunicationThreadSignal::DimmerCommandAnswer(answer) => Some(answer.id),
+            CommunicationThreadSignal::RunStatistics(statistics) => Some(statistics.id),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
+pub struct RunStatisticsData {
     pub bytes_readed: usize,
     pub last_read_time_stamp: Option<SystemTime>,
     pub cycles_count: u64,
     pub started_at: Option<SystemTime>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
+pub struct RunStatistics {
+    pub id: u32,
+    pub bytes_readed: usize,
+    pub last_read_time_stamp: Option<SystemTime>,
+    pub cycles_count: u64,
+    pub started_at: Option<SystemTime>,
+}
+
+impl RunStatisticsData {
+    fn to_answer(&self, id: u32) -> RunStatistics {
+        RunStatistics {
+            id,
+            bytes_readed: self.bytes_readed,
+            last_read_time_stamp: self.last_read_time_stamp,
+            cycles_count: self.cycles_count,
+            started_at: self.started_at,
+        }
+    }
 }
 
 pub struct CommunicationThread {
@@ -40,7 +86,7 @@ pub struct CommunicationThread {
     read_wait_timeout: Duration,
     command_send_buf: Vec<u8>,
     busy: bool,
-    run_statistics: RunStatistics, 
+    run_statistics: RunStatisticsData, 
 }
 
 impl CommunicationThread {
@@ -63,7 +109,7 @@ impl CommunicationThread {
             read_wait_timeout,
             command_send_buf: vec![0; Self::BUFFER_SIZE],
             busy: false,
-            run_statistics: RunStatistics {
+            run_statistics: RunStatisticsData {
                 bytes_readed: 0,
                 last_read_time_stamp: None,
                 cycles_count: 0,
@@ -88,9 +134,9 @@ impl CommunicationThread {
                     CommunicationThreadCommand::DimmerCommand(command) => {
                         self.send_command(command);
                     }
-                    CommunicationThreadCommand::GetRunStatistics => {
+                    CommunicationThreadCommand::GetRunStatistics(id) => {
                         self.answer_sender.send(CommunicationThreadSignal::RunStatistics(
-                            self.run_statistics.clone())).unwrap();
+                            self.run_statistics.to_answer(id))).unwrap();
                     }
                 }
             }
@@ -104,14 +150,16 @@ impl CommunicationThread {
                     self.busy = false;
                     return;
                 }
-                println!("Read {} bytes: {:?}", bytes_readed, &self.serial_buf[self.bytes_readed..self.bytes_readed + bytes_readed]);
+                debug!("Read {} bytes: {:?}", bytes_readed, &self.serial_buf[self.bytes_readed..self.bytes_readed + bytes_readed]);
                 self.bytes_readed += bytes_readed;
                 self.run_statistics.bytes_readed += bytes_readed;
                 self.last_read_time_stamp = SystemTime::now();
                 self.busy = true;
             }
-            Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
-            Err(e) => eprintln!("{:?}", e),
+            Err(ref e) if e.kind() == io::ErrorKind::TimedOut => {
+                self.busy = false;
+            },
+            Err(e) => error!("{:?}", e),
         }
     }
 
@@ -124,13 +172,12 @@ impl CommunicationThread {
         match from_bytes_crc32(&self.serial_buf.as_mut_slice()[0..self.bytes_readed], self.crc.digest()) {
             Ok(dimmer_answer) => {
                 let dimmer_answer: ClientCommandResult = dimmer_answer;
-                println!("Received command: {:?}", dimmer_answer);
-                match self.answer_sender.send(DimmerCommandAnswer(dimmer_answer)) {
-                    Ok(_) => println!("Anser returned."),
-                    Err(e) => eprintln!("Return anser error: {:?}", e),
+                match self.answer_sender.send(CommunicationThreadSignal::DimmerCommandAnswer(dimmer_answer)) {
+                    Ok(_) => debug!("Anser returned."),
+                    Err(e) => error!("Return anser error: {:?}", e),
                 }
             }
-            Err(e) => eprintln!("{:?}", e),
+            Err(e) => error!("{:?}", e),
         }
         self.bytes_readed = 0;
     }
@@ -143,7 +190,7 @@ impl CommunicationThread {
             Ok(command) => Some(command),
             Err(mpsc::TryRecvError::Empty) => None,
             Err(mpsc::TryRecvError::Disconnected) => {
-                eprintln!("Command source disconnected!");
+                error!("Command source disconnected!");
                 None
             }
         }
@@ -152,23 +199,10 @@ impl CommunicationThread {
     fn send_command(&mut self, command: ClientCommand) {
         match to_slice_crc32(&command, &mut self.command_send_buf, self.crc.digest()) {
             Ok(buff_slice) => {
-                println!("sending: {:?}", buff_slice);
+                debug!("sending: {:?}", buff_slice);
                 self.port.write_all(buff_slice).unwrap();
-
-                if let ClientCommand{data: dimmer_communication::ClientCommandType::SetChannelEnabled { channel, enabled }, ..} = command {
-                    let expected = ClientCommandResult {
-                        id: 0,
-                        data: Ok(SetChannelEnabled { channel, enabled }),
-                    };
-                    match to_slice_crc32(&expected, &mut self.command_send_buf, self.crc.digest()) {
-                        Ok(buff_slice) => {
-                            println!(" answer should be: {:?}", buff_slice);
-                        }
-                        Err(e) => eprintln!("{:?}", e),
-                    }
-                }
             }
-            Err(e) => eprintln!("{:?}", e),
+            Err(e) => error!("{:?}", e),
         }
     }
 }
